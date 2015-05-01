@@ -12,14 +12,11 @@ func (a *Agent) setConfigStorage() error {
 	readerDir := os.Getenv("RESOURCED_CONFIG_READER_DIR")
 	writerDir := os.Getenv("RESOURCED_CONFIG_WRITER_DIR")
 
-	configStorage, err := resourced_config.NewConfigStorage(readerDir, writerDir)
-	if err == nil {
-		a.ConfigStorage = configStorage
-	}
+	a.configStorageChan = make(chan *resourced_config.ConfigStorage)
 
 	go a.watchConfigDirectories(readerDir, writerDir)
 
-	return err
+	return nil
 }
 
 // watchConfigDirectories uses inotify to watch changes on config directories.
@@ -40,6 +37,13 @@ func (a *Agent) watchConfigDirectories(readerDir, writerDir string) error {
 		return err
 	}
 
+	if a.ConfigStorage == nil {
+		configStorage, err := resourced_config.NewConfigStorage(readerDir, writerDir)
+		if err == nil {
+			a.configStorageChan <- configStorage
+		}
+	}
+
 	for {
 		select {
 		case event := <-watcher.Events:
@@ -48,7 +52,7 @@ func (a *Agent) watchConfigDirectories(readerDir, writerDir string) error {
 
 				configStorage, err := resourced_config.NewConfigStorage(readerDir, writerDir)
 				if err == nil {
-					a.ConfigStorage = configStorage
+					a.configStorageChan <- configStorage
 				}
 			}
 		case err := <-watcher.Errors:

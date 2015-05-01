@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/user"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,10 +41,11 @@ func NewAgent() (*Agent, error) {
 // Agent struct carries most of the functionality of ResourceD.
 // It collects information through readers and serve them up as HTTP+JSON.
 type Agent struct {
-	ConfigStorage *resourced_config.ConfigStorage
-	DbPath        string
-	Db            *bolt.DB
-	Tags          []string
+	ConfigStorage     *resourced_config.ConfigStorage
+	DbPath            string
+	Db                *bolt.DB
+	Tags              []string
+	configStorageChan chan *resourced_config.ConfigStorage
 }
 
 // setTags store RESOURCED_TAGS data to Tags field.
@@ -394,21 +396,45 @@ func (a *Agent) GetRunByPath(path string) ([]byte, error) {
 }
 
 // RunForever executes Run() in an infinite loop with a sleep of config.Interval.
-func (a *Agent) RunForever(config resourced_config.Config) {
-	go func(a *Agent, config resourced_config.Config) {
-		for {
+func (a *Agent) RunForever(config resourced_config.Config, quit chan bool) {
+	for {
+		select {
+		case <-quit:
+			println("am i here?")
+			return
+		default:
 			a.Run(config)
 			libtime.SleepString(config.Interval)
 		}
-	}(a, config)
+	}
 }
 
 // RunAllForever executes all readers & writers in an infinite loop.
 func (a *Agent) RunAllForever() {
-	for _, config := range a.ConfigStorage.Readers {
-		a.RunForever(config)
-	}
-	for _, config := range a.ConfigStorage.Writers {
-		a.RunForever(config)
+	quitChans := make(map[string]chan bool)
+	configLock := new(sync.RWMutex)
+
+	for {
+		select {
+		case configStorage := <-a.configStorageChan:
+			configLock.Lock()
+			a.ConfigStorage = configStorage
+			configLock.Unlock()
+
+			if len(quitChans) > 0 {
+				for _, quitChan := range quitChans {
+					quitChan <- true
+				}
+			}
+
+			for _, config := range configStorage.Readers {
+				quitChans[config.Path] = make(chan bool)
+				a.RunForever(config, quitChans[config.Path])
+			}
+			for _, config := range configStorage.Writers {
+				quitChans[config.Path] = make(chan bool)
+				a.RunForever(config, quitChans[config.Path])
+			}
+		}
 	}
 }
